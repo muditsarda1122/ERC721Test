@@ -1,0 +1,292 @@
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity ^0.8.13;
+
+import "forge-std/Test.sol";
+import "../src/erc721.sol";
+
+contract TestERC721 is Test {
+    erc721 testToken;
+
+    address public alice = makeAddr("alice");
+    address public bob = makeAddr("bob");
+    address public charlie = makeAddr("charlie");
+    address public delta = makeAddr("delta");
+
+    address public tokenOwner = 0x1234567890123456789012345678901234567890;
+
+    // Mapping from token ID to owner address
+    mapping(uint256 => address) private _owners;
+
+    // Mapping owner address to token count
+    mapping(address => uint256) private _balances;
+
+    // Mapping from token ID to approved address
+    mapping(uint256 => address) private _tokenApprovals;
+
+    // Mapping from owner to operator approvals
+    mapping(address => mapping(address => bool)) private _operatorApprovals;
+
+    event Transfer(
+        address indexed _from,
+        address indexed _to,
+        uint256 indexed _tokenId
+    );
+    event Approval(
+        address indexed _owner,
+        address indexed _approved,
+        uint256 indexed _tokenId
+    );
+    event ApprovalForAll(
+        address indexed _owner,
+        address indexed _operator,
+        bool _approved
+    );
+
+    event fundReceivedFallback(address sender, uint256 value);
+    event fundReceivedReceive(address sender, uint256 value);
+
+    function setUp() public {
+        testToken = new erc721();
+
+        vm.startPrank(tokenOwner);
+        testToken.mint(alice, 2);
+        testToken.mint(alice, 6);
+        testToken.mint(bob, 10);
+        testToken.mint(charlie, 4);
+        testToken.mint(charlie, 1000);
+        vm.stopPrank();
+
+        vm.prank(alice);
+        testToken.approve(charlie, 2);
+
+        vm.prank(bob);
+        testToken.setApprovalForAll(delta, true);
+    }
+
+    //Mint a token with ID 0 and verify the contract behavior.(this is something that should be refrained from being done, as
+    //tokenId = 0 is saved for special purposes, however the ERC721 contract does not say anything about this)
+    function test_mintTokenId0() public {
+        vm.prank(tokenOwner);
+        testToken.mint(alice, 0);
+    }
+
+    //Mint a token with the maximum possible ID and verify the contract behavior.(should fail)
+    function testFail_mintTokenWithMaxIdPlusOne() public {
+        uint256 maxId = type(uint256).max + 1;
+        vm.prank(tokenOwner);
+        testToken.mint(alice, maxId);
+    }
+
+    //Attempt to mint a token with an ID that already exists.
+    function test_mintTokenWithSameId() public {
+        vm.startPrank(tokenOwner);
+        vm.expectRevert("ERC721: token already minted");
+        testToken.mint(bob, 2);
+        vm.stopPrank();
+    }
+
+    //Mint the maximum allowed number of tokens and verify the contract behavior
+    function test_mintTokenWithMaxPossibleTokenId() public {
+        uint256 maxId = type(uint256).max;
+        vm.prank(tokenOwner);
+        testToken.mint(alice, maxId);
+        uint256 lessThanMaxId = type(uint256).max - 1;
+        vm.prank(tokenOwner);
+        testToken.mint(alice, lessThanMaxId);
+    }
+
+    //Attempt to mint more tokens than the contract allows
+    function testFail_mintMoreTokensThanTheContractAllows() public {
+        uint256 invalidTokenId = type(uint256).max + 5;
+        vm.prank(tokenOwner);
+        testToken.mint(alice, invalidTokenId);
+    }
+
+    //Transfer a token from an address to itself.(nothing explicitly written about such a case in erc721 code)
+    function test_transferTokenToItself() public {
+        vm.prank(alice);
+        testToken.transfer(alice, alice, 2);
+    }
+
+    //Transfer a token from an address that does not own it
+    function test_transferFromNonOwner() public {
+        vm.startPrank(bob);
+        vm.expectRevert("ERC721: caller is not token owner or approved");
+        testToken.safeTransferFrom(alice, charlie, 2);
+        vm.stopPrank();
+    }
+
+    //Transfer a token without first obtaining approval
+    function testFail_transferWithoutApproval() public {
+        vm.prank(bob);
+        testToken.safeTransferFrom(alice, delta, 2);
+    }
+
+    //Attempt to burn a token that does not exist
+    function test_burnTokenWithInvalidTokenId() public {
+        vm.startPrank(tokenOwner);
+        vm.expectRevert(
+            "The token with given tokenId has not been minted yet."
+        );
+        testToken.burn(20);
+        vm.stopPrank();
+    }
+
+    //Burn a token and check if the total supply decreases(introduced 'totalSupply' function in ERC721 contract for this)
+    function test_burnAndTotalSupply() public {
+        uint256 initialSupply = testToken.totalSupply();
+        vm.prank(tokenOwner);
+        testToken.burn(4);
+        uint256 finalSupply = testToken.totalSupply();
+        assertEq(initialSupply - finalSupply, 1);
+    }
+
+    //Burn a token and check the balance of the owner
+    function test_burnAndBalance() public {
+        uint256 initialBalance = testToken.balanceOf(charlie);
+        vm.prank(tokenOwner);
+        testToken.burn(4);
+        uint256 finalBalance = testToken.balanceOf(charlie);
+        console.log(finalBalance); //should be 1
+        assertEq(initialBalance - finalBalance, 1);
+    }
+
+    //Check the total supply after minting and burning tokens
+    function test_totalSupply() public {
+        uint256 totalSupply1 = testToken.totalSupply();
+        vm.startPrank(tokenOwner);
+        testToken.mint(alice, 15);
+        testToken.mint(bob, 16);
+        testToken.mint(charlie, 17);
+        uint256 totalSupply2 = testToken.totalSupply();
+        testToken.burn(17);
+        uint256 totalSupply3 = testToken.totalSupply();
+        vm.stopPrank();
+        assertEq(totalSupply2 - totalSupply1, 3);
+        assertEq(totalSupply2 - totalSupply3, 1);
+    }
+
+    //Get the token URI for a non-existent token ID
+    function test_tokenURIforInvalidTokenId() public {
+        vm.expectRevert("ERC721: invalid token ID");
+        testToken.tokenURI(20);
+    }
+
+    //Change the token URI for an existing token ID(updated the function in ERC721 for this purpose)
+    // function test_changeTokenURI() public {
+    //     string memory initialTokenURI = testToken.tokenURI(2);
+    //     console.log(initialTokenURI);
+    //     vm.prank(tokenOwner);
+    //     testToken.transfer(alice, bob, 2);
+    //     string memory finalTokenURI = testToken.tokenURI(2);
+    //     console.log(finalTokenURI);
+    // }
+
+    //Attempt to mint tokens from an address that is not allowed to mint
+    function test_mintFromNonOwner() public {
+        vm.startPrank(delta);
+        vm.expectRevert("only owner can do the required function");
+        testToken.mint(charlie, 22);
+        vm.stopPrank();
+    }
+
+    //Perform batch minting of multiple tokens to different addresses
+    function test_mintMultipleTokens() public {
+        address[] memory recipients = new address[](3);
+        uint256[] memory tokenIds = new uint256[](3);
+
+        recipients[0] = alice;
+        recipients[1] = bob;
+        recipients[2] = charlie;
+
+        tokenIds[0] = 100;
+        tokenIds[1] = 101;
+        tokenIds[2] = 102;
+
+        vm.prank(tokenOwner);
+        testToken.batchMint(recipients, tokenIds);
+    }
+
+    //Perform batch transfers
+    function test_batchTransfers() public {
+        address[] memory from = new address[](3);
+        address[] memory to = new address[](3);
+        uint256[] memory tokenId = new uint256[](3);
+
+        from[0] = alice;
+        from[1] = bob;
+        from[2] = charlie;
+
+        to[0] = delta;
+        to[1] = alice;
+        to[2] = bob;
+
+        tokenId[0] = 2;
+        tokenId[1] = 10;
+        tokenId[2] = 4;
+
+        testToken.batchTransfers(from, to, tokenId);
+    }
+
+    //Revoke approval for a token
+    function test_revokeApproval() public {
+        vm.startPrank(alice);
+
+        vm.expectRevert("the address is not approved");
+        testToken.revokeApproval(charlie, 6);
+
+        testToken.revokeApproval(charlie, 2);
+        address approve = testToken.getApproved(2);
+        assertEq(approve, address(0));
+        testToken.approve(charlie, 2);
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        vm.expectRevert("the caller must be the owner of token");
+        testToken.revokeApproval(charlie, 2);
+        vm.stopPrank();
+    }
+
+    //Revoke operator approval
+    function test_removeOperatorApproval() public {
+        vm.prank(bob);
+        testToken.revokeApprovalForAll(bob, delta);
+        bool done = testToken.isApprovedForAll(bob, delta);
+        assertEq(done, false);
+    }
+
+    //Send Ether to the contract directly and verify the contract behavior(through receive)
+    // alice --> 2 ether --> testToken
+    function test_etherSentToReceive() public {
+        uint256 initialContractBalance = address(testToken).balance;
+        uint256 initialBalance = testToken.balanceOf(alice);
+        deal(alice, 3);
+        vm.startPrank(alice);
+        vm.expectEmit();
+        emit fundReceivedReceive(alice, 2);
+        (bool success, ) = address(testToken).call{value: 2}("");
+        require(success, "error");
+        vm.stopPrank();
+        uint256 finalContractBalance = address(testToken).balance;
+        uint256 finalBalance = testToken.balanceOf(alice);
+        assertEq(finalContractBalance - initialContractBalance, 2);
+        assertEq(initialBalance, finalBalance);
+    }
+
+    //Send Ether to the contract directly and verify the contract behavior(through fallback)
+    function test_etherSentToFallback() public {
+        uint256 initialContractBalance = address(testToken).balance;
+        uint256 initialBalance = testToken.balanceOf(alice);
+        deal(alice, 3);
+        vm.startPrank(alice);
+        vm.expectEmit();
+        emit fundReceivedFallback(alice, 2);
+        (bool success, ) = address(testToken).call{value: 2}("12345");
+        require(success, "error");
+        vm.stopPrank();
+        uint256 finalContractBalance = address(testToken).balance;
+        uint256 finalBalance = testToken.balanceOf(alice);
+        assertEq(finalContractBalance - initialContractBalance, 2);
+        assertEq(initialBalance, finalBalance);
+    }
+}
